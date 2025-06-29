@@ -1,0 +1,204 @@
+name: Simply Nix
+description: Install Nix and give it as much space as possible
+author: ners
+runs:
+  using: "composite"
+  steps:
+    - name: Linux setup
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        free_space=$(df -m --output=avail /mnt | tail -n 1 | tr -d ' ')
+        echo "Initial free space of /mnt: ${free_space} MiB"
+        loop_dev=$(sudo losetup --find)
+        loop_num=${loop_dev##*/loop}
+        mnt_safe_haven=1024
+
+        if sudo fallocate -l $((free_space - mnt_safe_haven))M "/mnt/disk${loop_num}.img"; then
+          sudo losetup ${loop_dev} "/mnt/disk${loop_num}.img"
+        fi
+
+        # Create filesystem
+        sudo mkfs.btrfs -L nix -d raid0 -m raid0 --nodiscard "${loop_dev}"
+        sudo btrfs device scan
+        sudo btrfs filesystem show
+
+        # Mount filesystem
+        sudo mkdir -p /nix
+        sudo mount LABEL=nix /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120
+        sudo df -h
+
+        # Create a tmp directory within /nix for Nix builds and set TMPDIR
+        TMPNIX=/nix/_temp
+        sudo mkdir -p $TMPNIX
+        sudo chmod 1777 $TMPNIX
+        echo "TMPDIR=$TMPNIX" >> $GITHUB_ENV
+        echo "TMPDIR set to $TMPNIX to use space on the /nix volume for builds."
+
+        sudo chown -R "$(id --user)":"$(id --group)" /nix
+        echo "Granting user ownership of /nix"
+
+        # Create a directory to store expansion state
+        mkdir -p "${HOME}/.expansion"
+        echo "Initial volume created"
+
+        # Nix is often installed in /usr/local, so we need to ensure that it is purged early
+        sudo rm -rf /usr/local
+        sudo mkdir -p /usr/local/{bin,doc,include,lib,man,sbin,share,src} || true
+
+        cat > /tmp/expand_nix_volume.sh << 'EOF'
+        #!/usr/bin/env bash
+        set -e
+
+        echo "Space expansion started. /nix will grow as space becomes available."
+
+        root_safe_haven=2048
+        function add_expansion_disk() {
+          # Check for additional free space after purging
+          free_space=$(df -m --output=avail / | tail -n 1 | tr -d ' ')
+          echo "Free space of / after purge: ${free_space} MiB"
+
+          # Create additional disk if suitable free space exists
+          if [ $free_space -gt $((root_safe_haven + 2048)) ]; then
+            # Calculate the size of the expansion disk, reserving the safe haven
+            disk_size=$((free_space - root_safe_haven))
+            echo "Creating expansion disk of ${disk_size} MiB in /"
+            # Create expansion disk image
+            loop_dev=$(sudo losetup --find)
+            loop_num=${loop_dev##*/loop}
+            if sudo fallocate -l ${disk_size}M "/disk${loop_num}.img"; then
+              sudo losetup ${loop_dev} "/disk${loop_num}.img"
+
+              # Add the new device to the pool
+              sudo btrfs device add --nodiscard ${loop_dev} /nix
+              echo "Added expansion disk "/disk${loop_num}.img" (${loop_dev}, ${disk_size}MB) to /nix pool"
+              # Balance the filesystem to use the new space
+              sudo btrfs balance start -dusage=50 /nix
+              sudo btrfs filesystem show
+            fi
+          fi
+        }
+
+        for CRUFT in $(docker image ls --format '{{.ID}}'); do
+          docker rmi --force "${CRUFT}" || true
+        done
+        docker system prune --all --force
+
+        # Cleanse apt
+        if [ "$(lsb_release -is)" != "Ubuntu" ]; then
+          sudo tee /etc/dpkg/dpkg.cfg.d/01_nocruft > /dev/null << 'APTCFG'
+        path-exclude /usr/share/doc/*
+        path-exclude /usr/share/fonts/*
+        path-exclude /usr/share/icons/*
+        path-exclude /usr/share/info/*
+        path-exclude /usr/share/man/*
+        APTCFG
+
+          sudo apt-get -y remove --purge \
+            '^apache2.*' \
+            '^aspnetcore-.*' \
+            azure-cli \
+            buildah \
+            '^byobu.*' \
+            '^clang-.*' \
+            containerd.io \
+            containernetworking-plugins \
+            '^docker.*' \
+            '^dotnet-.*' \
+            firefox \
+            '^fonts-.*' \
+            fwupd \
+            '^gfortran-.*' \
+            '^google-.*' \
+            '^gradle.*' \
+            '^java.*' \
+            '^kotlin.*' \
+            kubectl \
+            '^libclang-.*' \
+            libgl1-mesa-dri \
+            '^libgirepository-.*' \
+            '^libgtk-.*' \
+            '^libllvm-.*' \
+            '^libx265-.*' \
+            '^llvm-.*' \
+            man-db \
+            '^mecab.*' \
+            mediainfo \
+            '^mercurial.*' \
+            microsoft-edge-stable \
+            '^mongodb-.*' \
+            '^mono-.*' \
+            '^mssql-.*' \
+            '^mysql-.*' \
+            '^nginx-.*' \
+            '^php.*' \
+            '^podman.*' \
+            '^powershell.*' \
+            '^postgres.*' \
+            python-babel-localedata \
+            '^python3-babel.*' \
+            '^python3-boto.*' \
+            '^ruby.*' \
+            '^r-base.*' \
+            skopeo \
+            snapd \
+            tcl \
+            tk \
+            '^tex-.*' \
+            '^vim.*'
+
+          sudo apt-get -y autoremove --purge
+          sudo apt-get -y clean
+        fi
+
+        sudo rm -rf \
+          "${HOME}/.rustup" \
+          "${HOME}/.cargo" \
+          "${HOME}/.dotnet" \
+          "${HOME}/snap" \
+          /opt/containerd \
+          /opt/hostedtoolcache \
+          /opt/microsoft \
+          /opt/az \
+          /opt/pipx* \
+          /opt/google \
+          /opt/mssql-tools \
+          /usr/bin/kotlin* \
+          /usr/lib/heroku \
+          /usr/share/apache-* \
+          /usr/share/az_* \
+          /usr/share/doc/* \
+          /usr/share/fonts/* \
+          /usr/share/gradle-* \
+          /usr/share/icons/* \
+          /usr/share/info/* \
+          /usr/share/kotlinc \
+          /usr/share/java \
+          /usr/share/man/* \
+          /usr/share/miniconda \
+          /usr/share/sbt \
+          /usr/share/swift \
+          /usr/share/tcltk \
+          /usr/share/texinfo \
+          /var/lib/containerd \
+          /var/lib/gems \
+          /var/lib/mysql \
+          /var/lib/ubuntu-advantage \
+          /snap \
+          /usr/lib/snapd \
+          /var/snap \
+          /var/lib/snapd \
+          /usr/bin/docker* \
+          /var/lib/docker
+
+        # Claim the space from / for purging
+        add_expansion_disk
+        EOF
+
+        # Make script executable
+        chmod +x /tmp/expand_nix_volume.sh
+        /tmp/expand_nix_volume.sh &
+    - uses: nixbuild/nix-quick-install-action@v32
+branding:
+  icon: zap
+  color: gray-dark
