@@ -20,10 +20,15 @@ jobs:
           - ubuntu-24.04-arm
           - macos-15
           - macos-13
+        reclaim_space:
+          - true
+          - false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./
+        with:
+          reclaim_space: ${{ matrix.reclaim_space }}
       - name: Nix
         run: |
           nix --version

@@ -1,11 +1,16 @@
 name: Simply Nix
 description: Install Nix and give it as much space as possible
 author: ners
+inputs:
+  reclaim_space:
+    description: 'Reclaim as much space as possible'
+    required: false
+    default: 'false'
 runs:
   using: "composite"
   steps:
-    - name: Linux setup
-      if: runner.os == 'Linux'
+    - name: Reclaim space on Linux
+      if: runner.os == 'Linux' && inputs.reclaim_space == 'true'
       shell: bash
       run: |
         free_space=$(df -m --output=avail /mnt | tail -n 1 | tr -d ' ')
@@ -46,45 +51,19 @@ runs:
         sudo rm -rf /usr/local
         sudo mkdir -p /usr/local/{bin,doc,include,lib,man,sbin,share,src} || true
 
+        echo "Preparing space reclamation script"
+
         cat > /tmp/expand_nix_volume.sh << 'EOF'
         #!/usr/bin/env bash
         set -e
 
         echo "Space expansion started. /nix will grow as space becomes available."
 
-        root_safe_haven=2048
-        function add_expansion_disk() {
-          # Check for additional free space after purging
-          free_space=$(df -m --output=avail / | tail -n 1 | tr -d ' ')
-          echo "Free space of / after purge: ${free_space} MiB"
-
-          # Create additional disk if suitable free space exists
-          if [ $free_space -gt $((root_safe_haven + 2048)) ]; then
-            # Calculate the size of the expansion disk, reserving the safe haven
-            disk_size=$((free_space - root_safe_haven))
-            echo "Creating expansion disk of ${disk_size} MiB in /"
-            # Create expansion disk image
-            loop_dev=$(sudo losetup --find)
-            loop_num=${loop_dev##*/loop}
-            if sudo fallocate -l ${disk_size}M "/disk${loop_num}.img"; then
-              sudo losetup ${loop_dev} "/disk${loop_num}.img"
-
-              # Add the new device to the pool
-              sudo btrfs device add --nodiscard ${loop_dev} /nix
-              echo "Added expansion disk "/disk${loop_num}.img" (${loop_dev}, ${disk_size}MB) to /nix pool"
-              # Balance the filesystem to use the new space
-              sudo btrfs balance start -dusage=50 /nix
-              sudo btrfs filesystem show
-            fi
-          fi
-        }
-
         for CRUFT in $(docker image ls --format '{{.ID}}'); do
           docker rmi --force "${CRUFT}" || true
         done
         docker system prune --all --force
 
-        # Cleanse apt
         if [ "$(lsb_release -is)" != "Ubuntu" ]; then
           sudo tee /etc/dpkg/dpkg.cfg.d/01_nocruft > /dev/null << 'APTCFG'
         path-exclude /usr/share/doc/*
@@ -191,13 +170,36 @@ runs:
           /usr/bin/docker* \
           /var/lib/docker
 
-        # Claim the space from / for purging
-        add_expansion_disk
+        # Check for additional free space after purging
+        free_space=$(df -m --output=avail / | tail -n 1 | tr -d ' ')
+        echo "Free space of / after purge: ${free_space} MiB"
+
+        # Create additional disk if suitable free space exists
+        root_safe_haven=2048
+        if [ $free_space -gt $((root_safe_haven + 2048)) ]; then
+          # Calculate the size of the expansion disk, reserving the safe haven
+          disk_size=$((free_space - root_safe_haven))
+          echo "Creating expansion disk of ${disk_size} MiB in /"
+          # Create expansion disk image
+          loop_dev=$(sudo losetup --find)
+          loop_num=${loop_dev##*/loop}
+          if sudo fallocate -l ${disk_size}M "/disk${loop_num}.img"; then
+            sudo losetup ${loop_dev} "/disk${loop_num}.img"
+
+            # Add the new device to the pool
+            sudo btrfs device add --nodiscard ${loop_dev} /nix
+            echo "Added expansion disk "/disk${loop_num}.img" (${loop_dev}, ${disk_size}MB) to /nix pool"
+            # Balance the filesystem to use the new space
+            sudo btrfs balance start -dusage=50 /nix
+            sudo btrfs filesystem show
+          fi
+        fi
         EOF
 
-        # Make script executable
         chmod +x /tmp/expand_nix_volume.sh
-        /tmp/expand_nix_volume.sh &
+        /tmp/expand_nix_volume.sh >/dev/null 2>&1 &
+
+        echo "Space reclamation running in background"
     - uses: nixbuild/nix-quick-install-action@v32
 branding:
   icon: zap
