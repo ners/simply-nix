@@ -5,10 +5,38 @@ inputs:
   reclaim_space:
     description: 'Reclaim as much space as possible'
     required: false
-    default: 'false'
+    default: false
 runs:
   using: "composite"
   steps:
+    - name: Download rmz
+      if: inputs.reclaim_space == 'true'
+      shell: bash
+      run: |
+        ARCH=$(uname -m)
+        if [[ "$ARCH" == "x86_64" ]]; then
+          URL_ARCH="x86_64"
+        elif [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+          URL_ARCH="aarch64"
+        else
+          echo "Unsupported architecture: $ARCH"
+          exit 1
+        fi
+
+        OS=$(uname -s)
+        if [[ "$OS" == "Linux" ]]; then
+          URL_OS="unknown-linux-gnu"
+        elif [[ "$OS" == "Darwin" ]]; then
+          URL_OS="apple-darwin"
+        else
+          echo "Unsupported OS: $OS"
+          exit 1
+        fi
+
+        DOWNLOAD_URL="https://github.com/SUPERCILEX/fuc/releases/download/3.0.1/${URL_ARCH}-${URL_OS}-rmz"
+        curl -L -o /tmp/rmz "$DOWNLOAD_URL"
+        chmod +x /tmp/rmz
+        /tmp/rmz --version
     - name: Reclaim space on Linux
       if: runner.os == 'Linux' && inputs.reclaim_space == 'true'
       shell: bash
@@ -46,12 +74,6 @@ runs:
         # Create a directory to store expansion state
         mkdir -p "${HOME}/.expansion"
         echo "Initial volume created"
-
-        # Nix is often installed in /usr/local, so we need to ensure that it is purged early
-        sudo rm -rf /usr/local
-        sudo mkdir -p /usr/local/{bin,doc,include,lib,man,sbin,share,src} || true
-
-        echo "Preparing space reclamation script"
 
         cat > /tmp/expand_nix_volume.sh << 'EOF'
         #!/usr/bin/env bash
@@ -130,7 +152,7 @@ runs:
           sudo apt-get -y clean
         fi
 
-        sudo rm -rf \
+        sudo /tmp/rmz -f \
           "${HOME}/.rustup" \
           "${HOME}/.cargo" \
           "${HOME}/.dotnet" \
@@ -144,6 +166,7 @@ runs:
           /opt/mssql-tools \
           /usr/bin/kotlin* \
           /usr/lib/heroku \
+          /usr/local \
           /usr/share/apache-* \
           /usr/share/az_* \
           /usr/share/doc/* \
