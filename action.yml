@@ -33,7 +33,7 @@ runs:
           exit 1
         fi
 
-        DOWNLOAD_URL="https://github.com/SUPERCILEX/fuc/releases/download/3.0.1/${URL_ARCH}-${URL_OS}-rmz"
+        DOWNLOAD_URL="https://github.com/SUPERCILEX/fuc/releases/download/3.1.1/${URL_ARCH}-${URL_OS}-rmz"
         curl -L -o /tmp/rmz "$DOWNLOAD_URL"
         chmod +x /tmp/rmz
         /tmp/rmz --version
@@ -223,7 +223,7 @@ runs:
         /tmp/expand_nix_volume.sh >/dev/null 2>&1 &
 
         echo "Space reclamation running in background"
-    - uses: nixbuild/nix-quick-install-action@v32
+    - uses: nixbuild/nix-quick-install-action@v34
 branding:
   icon: zap
   color: gray-dark
