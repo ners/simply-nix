@@ -224,6 +224,8 @@ runs:
 
         echo "Space reclamation running in background"
     - uses: nixbuild/nix-quick-install-action@v34
+      with:
+        nix_version: 2.31.2
 branding:
   icon: zap
   color: gray-dark
